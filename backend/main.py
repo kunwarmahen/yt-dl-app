@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import logging
+import threading
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -52,10 +53,14 @@ download_path.mkdir(parents=True, exist_ok=True)
 
 # Track ongoing downloads
 downloads = {}
+# Track downloads to cancel
+cancel_downloads = set()
+downloads_lock = threading.Lock()
 
 class DownloadRequest(BaseModel):
     url: str
     custom_name: Optional[str] = None
+    download_list: bool = False
 
 class ConfigUpdate(BaseModel):
     download_path: Optional[str] = None
@@ -80,13 +85,56 @@ async def update_config(update: ConfigUpdate):
     return config
 
 @app.post("/download")
-async def download_youtube(request: DownloadRequest, background_tasks: BackgroundTasks):
+async def download_youtube(request: DownloadRequest, background_tasks: BackgroundTasks, req: Request):
     """
     Queue a YouTube video for MP3 download
     """
     url = request.url.strip()
     
-    logger.info(f"Download request received. URL: {url}")
+    # Get real client IP from headers (try X-Forwarded-For first for proxy/container environments)
+    client_ip = None
+    
+    # Try X-Forwarded-For header first (for proxies, load balancers)
+    if "x-forwarded-for" in req.headers:
+        client_ip = req.headers["x-forwarded-for"].split(",")[0].strip()
+    # Try X-Real-IP header (common in reverse proxies)
+    elif "x-real-ip" in req.headers:
+        client_ip = req.headers["x-real-ip"]
+    # Fall back to direct connection
+    elif req.client:
+        client_ip = req.client.host
+    
+    # Only show IP if it's not localhost/container IP
+    if client_ip and (client_ip.startswith("127.") or client_ip.startswith("172.") or 
+                      client_ip.startswith("192.168.") or client_ip == "::1"):
+        client_ip = None
+    
+    # Get MAC address from ARP (best effort, may not work in all environments)
+    mac_address = None
+    if client_ip:
+        try:
+            import subprocess
+            import platform
+            
+            if platform.system() == "Linux":
+                # Try to get MAC from ARP
+                result = subprocess.run(
+                    ["arp", "-n", client_ip],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if client_ip in line:
+                            parts = line.split()
+                            if len(parts) >= 3:
+                                mac_address = parts[2]
+                                break
+        except Exception as e:
+            logger.debug(f"Could not get MAC address: {str(e)}")
+    
+    logger.info(f"Download request received. URL: {url}, Download list: {request.download_list}, IP: {client_ip}, MAC: {mac_address}")
     
     # Validate URL
     if not is_valid_youtube_url(url):
@@ -100,10 +148,12 @@ async def download_youtube(request: DownloadRequest, background_tasks: Backgroun
         "progress": 0,
         "title": None,
         "error": None,
-        "created_at": datetime.now().isoformat()
+        "created_at": datetime.now().timestamp(),
+        "client_ip": client_ip,
+        "mac_address": mac_address
     }
     
-    background_tasks.add_task(perform_download, download_id, url, request.custom_name)
+    background_tasks.add_task(perform_download, download_id, url, request.custom_name, request.download_list)
     
     return {
         "download_id": download_id,
@@ -168,12 +218,13 @@ def is_valid_youtube_url(url: str) -> bool:
     youtube_domains = ["youtube.com", "youtu.be"]
     return any(domain in url for domain in youtube_domains)
 
-def perform_download(download_id: str, url: str, custom_name: Optional[str]):
+def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False):
     """
     Perform the actual download in background
     """
     try:
-        downloads[download_id]["status"] = "downloading"
+        with downloads_lock:
+            downloads[download_id]["status"] = "downloading"
         
         output_path = download_path
         
@@ -197,26 +248,54 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str]):
             'progress_hooks': [lambda d: update_progress(download_id, d)],
         }
         
+        # If not downloading list, only download first item
+        if not download_list:
+            ydl_opts['playlist_items'] = '1'
+        
+        def check_cancel(d):
+            """Check if download should be cancelled"""
+            with downloads_lock:
+                if download_id in cancel_downloads:
+                    return True
+            return False
+        
+        # Add cancellation hook
+        ydl_opts['progress_hooks'].append(lambda d: (
+            check_cancel(d) and (_ for _ in ()).throw(Exception("Download cancelled by user"))
+        ))
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'Unknown')
             
-            downloads[download_id].update({
-                "status": "completed",
-                "title": title,
-                "progress": 100,
-                "completed_at": datetime.now().isoformat()
-            })
+            with downloads_lock:
+                downloads[download_id].update({
+                    "status": "completed",
+                    "title": title,
+                    "progress": 100,
+                    "completed_at": datetime.now().timestamp()
+                })
             
             logger.info(f"Download completed: {download_id} - {title}")
     
     except Exception as e:
-        logger.error(f"Download failed: {download_id} - {str(e)}")
-        downloads[download_id].update({
-            "status": "error",
-            "error": str(e),
-            "completed_at": datetime.now().isoformat()
-        })
+        error_msg = str(e)
+        is_cancelled = "cancelled" in error_msg.lower()
+        
+        logger.error(f"Download failed: {download_id} - {error_msg}")
+        with downloads_lock:
+            downloads[download_id].update({
+                "status": "cancelled" if is_cancelled else "error",
+                "error": error_msg,
+                "completed_at": datetime.now().timestamp()
+            })
+            # Remove from cancel set if it was cancelled
+            cancel_downloads.discard(download_id)
+    
+    finally:
+        # Clean up cancel flag
+        with downloads_lock:
+            cancel_downloads.discard(download_id)
 
 def update_progress(download_id: str, d):
     """Update progress for a download"""
@@ -234,6 +313,59 @@ async def clear_download(download_id: str):
         del downloads[download_id]
         return {"message": "Download cleared"}
     raise HTTPException(status_code=404, detail="Download not found")
+
+@app.post("/downloads/{download_id}/cancel")
+async def cancel_download(download_id: str):
+    """Cancel an ongoing download"""
+    with downloads_lock:
+        if download_id not in downloads:
+            raise HTTPException(status_code=404, detail="Download not found")
+        
+        download = downloads[download_id]
+        if download["status"] not in ["downloading", "queued"]:
+            raise HTTPException(status_code=400, detail="Cannot cancel completed or error download")
+        
+        # Mark for cancellation
+        cancel_downloads.add(download_id)
+        downloads[download_id]["status"] = "cancelling"
+    
+    logger.info(f"Cancel requested for download: {download_id}")
+    return {"message": "Cancellation requested", "download_id": download_id}
+
+@app.delete("/files/{filename}")
+async def delete_file(filename: str):
+    """Delete an MP3 file from the filesystem"""
+    try:
+        from urllib.parse import unquote
+        filename = unquote(filename)
+        
+        # Sanitize filename to prevent directory traversal
+        filename = filename.strip()
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        file_path = download_path / filename
+        
+        # Check if file exists
+        if not file_path.exists():
+            logger.warning(f"Delete request for non-existent file: {filename}")
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Check if file is actually an MP3
+        if not filename.lower().endswith('.mp3'):
+            raise HTTPException(status_code=400, detail="Only MP3 files can be deleted")
+        
+        # Delete the file
+        file_path.unlink()
+        logger.info(f"Deleted file: {filename}")
+        
+        return {"message": f"File deleted: {filename}"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting file {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error deleting file")
 
 @app.get("/play/{filename}")
 async def play_file(filename: str):

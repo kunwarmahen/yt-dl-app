@@ -15,6 +15,7 @@ function App() {
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [downloadList, setDownloadList] = useState(false);
   const itemsPerPage = 10;
 
   // Load initial data
@@ -76,6 +77,7 @@ function App() {
         body: JSON.stringify({
           url: url.trim(),
           custom_name: customName.trim() || undefined,
+          download_list: downloadList,
         }),
       });
 
@@ -83,6 +85,7 @@ function App() {
         const data = await res.json();
         setUrl("");
         setCustomName("");
+        setDownloadList(false);
         loadDownloads();
       } else {
         const err = await res.json();
@@ -122,6 +125,23 @@ function App() {
     }
   };
 
+  const handleCancelDownload = async (downloadId) => {
+    try {
+      const res = await fetch(`${API_BASE}/downloads/${downloadId}/cancel`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        loadDownloads();
+      } else {
+        const err = await res.json();
+        setError(err.detail || "Failed to cancel download");
+      }
+    } catch (err) {
+      console.error("Failed to cancel download:", err);
+      setError("Error cancelling download");
+    }
+  };
+
   const formatBytes = (bytes) => {
     if (bytes === 0 || bytes === undefined || bytes === null) return "0 Bytes";
     const k = 1024;
@@ -136,10 +156,30 @@ function App() {
     return date.toLocaleString();
   };
 
-  const formatISOTime = (isoString) => {
-    // For ISO 8601 format strings from downloads (created_at)
-    const date = new Date(isoString);
+  const formatISOTime = (value) => {
+    // Handle both Unix timestamps and ISO strings
+    let date;
+    if (typeof value === "number") {
+      // Unix timestamp in seconds
+      date = new Date(value * 1000);
+    } else {
+      // ISO 8601 string
+      date = new Date(value);
+    }
     return date.toLocaleTimeString();
+  };
+
+  const formatDateTime = (value) => {
+    // Handle both Unix timestamps and ISO strings
+    let date;
+    if (typeof value === "number") {
+      // Unix timestamp in seconds
+      date = new Date(value * 1000);
+    } else {
+      // ISO 8601 string
+      date = new Date(value);
+    }
+    return date.toLocaleString();
   };
 
   const handlePlayFile = (filename) => {
@@ -157,6 +197,29 @@ function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const handleDeleteFile = async (filename) => {
+    if (window.confirm(`Delete "${filename}"?`)) {
+      try {
+        const res = await fetch(
+          `${API_BASE}/files/${encodeURIComponent(filename)}`,
+          {
+            method: "DELETE",
+          }
+        );
+
+        if (res.ok) {
+          loadFiles();
+        } else {
+          const err = await res.json();
+          setError(err.detail || "Failed to delete file");
+        }
+      } catch (err) {
+        console.error("Delete error:", err);
+        setError("Error deleting file");
+      }
+    }
   };
 
   // Filter files based on search query
@@ -263,6 +326,22 @@ function App() {
               />
             </div>
 
+            <div className="form-group checkbox-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={downloadList}
+                  onChange={(e) => setDownloadList(e.target.checked)}
+                />
+                Download entire playlist/list (if URL is a list)
+              </label>
+              <small>
+                {downloadList
+                  ? "Will download all items in the playlist"
+                  : "Will download only the first item"}
+              </small>
+            </div>
+
             <button type="submit" className="btn btn-primary btn-large">
               Download MP3
             </button>
@@ -281,7 +360,8 @@ function App() {
                 .map(([id, dl]) => (
                   <div key={id} className={`download-card ${dl.status}`}>
                     <div className="download-status">
-                      {dl.status === "downloading" && (
+                      {(dl.status === "downloading" ||
+                        dl.status === "cancelling") && (
                         <span className="spinner"></span>
                       )}
                       {dl.status === "completed" && (
@@ -290,6 +370,9 @@ function App() {
                       {dl.status === "error" && <span className="icon">✕</span>}
                       {dl.status === "queued" && (
                         <span className="icon">⏳</span>
+                      )}
+                      {dl.status === "cancelled" && (
+                        <span className="icon">⏹️</span>
                       )}
                     </div>
 
@@ -310,10 +393,34 @@ function App() {
                       {dl.error && <p className="error-text">{dl.error}</p>}
 
                       <p className="time-text">
-                        {formatISOTime(dl.created_at)}
+                        {formatDateTime(dl.created_at)}
                       </p>
+
+                      {(dl.client_ip || dl.mac_address) && (
+                        <div className="device-info">
+                          {dl.client_ip && (
+                            <span className="info-item">
+                              🌐 IP: {dl.client_ip}
+                            </span>
+                          )}
+                          {dl.mac_address && (
+                            <span className="info-item">
+                              🔗 MAC: {dl.mac_address}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
+                    {dl.status === "downloading" && (
+                      <button
+                        className="btn-cancel"
+                        onClick={() => handleCancelDownload(id)}
+                        title="Cancel download"
+                      >
+                        ⏹️
+                      </button>
+                    )}
                     <button
                       className="btn-clear"
                       onClick={() => handleClearDownload(id)}
@@ -379,6 +486,13 @@ function App() {
                           title="Download"
                         >
                           ⬇️
+                        </button>
+                        <button
+                          className="btn-action btn-delete"
+                          onClick={() => handleDeleteFile(file.name)}
+                          title="Delete"
+                        >
+                          🗑️
                         </button>
                       </div>
                     </div>
