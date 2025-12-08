@@ -1,4 +1,4 @@
-# 🎵 Home MP3 Hub - YouTube Downloader
+# 🎵 Home MP3 Hub - YT Downloader
 
 A self-hosted, local-network YouTube to MP3 downloader running on your NAS. Anyone in your household can share YouTube links through a beautiful web interface, and the app automatically downloads and organizes the audio files.
 
