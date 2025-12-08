@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Playfair+Display:wght@700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Playfair+Display:wght@700&display=swap");
 
 * {
   margin: 0;
@@ -22,7 +22,7 @@
 }
 
 body {
-  font-family: 'Poppins', sans-serif;
+  font-family: "Poppins", sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
@@ -59,7 +59,7 @@ body {
 }
 
 h1 {
-  font-family: 'Playfair Display', serif;
+  font-family: "Playfair Display", serif;
   font-size: 2.5rem;
   margin-bottom: 0.5rem;
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
@@ -125,7 +125,7 @@ main {
   font-size: 1.5rem;
   margin-bottom: 1.5rem;
   color: var(--text);
-  font-family: 'Playfair Display', serif;
+  font-family: "Playfair Display", serif;
 }
 
 /* Settings Panel */
@@ -178,7 +178,7 @@ main {
   border: 2px solid var(--border);
   color: var(--text);
   border-radius: 8px;
-  font-family: 'Poppins', sans-serif;
+  font-family: "Poppins", sans-serif;
   font-size: 1rem;
   transition: all 0.3s ease;
 }
@@ -205,7 +205,7 @@ main {
   padding: 0.75rem 1.5rem;
   border: none;
   border-radius: 8px;
-  font-family: 'Poppins', sans-serif;
+  font-family: "Poppins", sans-serif;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
@@ -213,7 +213,11 @@ main {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  background: linear-gradient(
+    135deg,
+    var(--primary) 0%,
+    var(--primary-dark) 100%
+  );
   color: white;
   box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
 }
@@ -266,7 +270,7 @@ main {
   .download-form {
     grid-template-columns: 1fr;
   }
-  
+
   .download-form button {
     grid-column: 1 / -1;
   }
@@ -416,7 +420,7 @@ main {
 
 .table-header {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
   gap: 1rem;
   background: var(--bg);
   padding: 1rem 1.5rem;
@@ -427,7 +431,7 @@ main {
 
 .table-row {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
   gap: 1rem;
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border);
@@ -455,6 +459,41 @@ main {
 .col-date {
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.col-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.btn-action {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  color: var(--text);
+}
+
+.btn-play {
+  color: var(--accent);
+}
+
+.btn-play:hover {
+  background: rgba(78, 205, 196, 0.1);
+  transform: scale(1.1);
+}
+
+.btn-download {
+  color: var(--primary);
+}
+
+.btn-download:hover {
+  background: rgba(255, 107, 107, 0.1);
+  transform: scale(1.1);
 }
 
 /* Empty State */
@@ -554,20 +593,127 @@ main {
   }
 
   .col-name::before {
-    content: 'File: ';
+    content: "File: ";
     font-weight: 600;
     color: var(--text);
   }
 
   .col-size::before {
-    content: 'Size: ';
+    content: "Size: ";
     font-weight: 600;
     color: var(--text);
   }
 
   .col-date::before {
-    content: 'Modified: ';
+    content: "Modified: ";
     font-weight: 600;
     color: var(--text);
+  }
+}
+
+/* Search and Pagination */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.section-header h2 {
+  margin: 0;
+}
+
+.search-box {
+  flex: 1;
+  min-width: 200px;
+  padding: 0.75rem 1rem;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  font-family: "Poppins", sans-serif;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+}
+
+.search-box:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(78, 205, 196, 0.1);
+}
+
+.search-box::placeholder {
+  color: var(--text-muted);
+}
+
+.no-results {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted);
+}
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.pagination-btn {
+  padding: 0.65rem 1.2rem;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  font-family: "Poppins", sans-serif;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.95rem;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: rgba(255, 107, 107, 0.05);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  min-width: 120px;
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .section-header {
+    flex-direction: column;
+  }
+
+  .section-header h2 {
+    width: 100%;
+  }
+
+  .search-box {
+    width: 100%;
+  }
+
+  .pagination {
+    flex-wrap: wrap;
+  }
+
+  .pagination-btn {
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
   }
 }

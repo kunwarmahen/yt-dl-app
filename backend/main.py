@@ -86,8 +86,11 @@ async def download_youtube(request: DownloadRequest, background_tasks: Backgroun
     """
     url = request.url.strip()
     
+    logger.info(f"Download request received. URL: {url}")
+    
     # Validate URL
     if not is_valid_youtube_url(url):
+        logger.error(f"Invalid YouTube URL: {url}")
         raise HTTPException(status_code=400, detail="Invalid YouTube URL")
     
     download_id = f"dl_{int(datetime.now().timestamp() * 1000)}"
@@ -141,18 +144,28 @@ async def list_downloaded_files():
         for file in files:
             if file.endswith('.mp3'):
                 file_path = Path(root) / file
-                mp3_files.append({
+                stat_info = file_path.stat()
+                file_size = stat_info.st_size
+                
+                # Send timestamp as Unix timestamp, let frontend convert to local time
+                mtime_timestamp = stat_info.st_mtime
+                
+                file_obj = {
                     "name": file,
                     "path": str(file_path.relative_to(download_path)),
-                    "size": file_path.stat().st_size,
-                    "modified": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
-                })
+                    "size": int(file_size),
+                    "modified": mtime_timestamp
+                }
+                logger.info(f"File: {file}, Size: {file_size}, Modified: {mtime_timestamp}")
+                mp3_files.append(file_obj)
     
+    logger.info(f"Total files found: {len(mp3_files)}")
     return sorted(mp3_files, key=lambda x: x["modified"], reverse=True)
 
 def is_valid_youtube_url(url: str) -> bool:
     """Validate if URL is a YouTube URL"""
-    youtube_domains = ["youtube.com", "youtu.be", "www.youtube.com"]
+    url = url.strip().lower()  # Strip whitespace and convert to lowercase
+    youtube_domains = ["youtube.com", "youtu.be"]
     return any(domain in url for domain in youtube_domains)
 
 def perform_download(download_id: str, url: str, custom_name: Optional[str]):
@@ -221,6 +234,100 @@ async def clear_download(download_id: str):
         del downloads[download_id]
         return {"message": "Download cleared"}
     raise HTTPException(status_code=404, detail="Download not found")
+
+@app.get("/play/{filename}")
+async def play_file(filename: str):
+    """Stream an MP3 file for playback"""
+    try:
+        # URL decode the filename (handles spaces, special chars)
+        from urllib.parse import unquote
+        filename = unquote(filename)
+        
+        # Sanitize filename to prevent directory traversal
+        filename = filename.strip()
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        file_path = download_path / filename
+        
+        # Check if file exists
+        if not file_path.exists():
+            logger.warning(f"Play request for non-existent file: {filename}")
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Check if file is actually an MP3
+        if not filename.lower().endswith('.mp3'):
+            raise HTTPException(status_code=400, detail="Only MP3 files can be played")
+        
+        logger.info(f"Streaming file: {filename}")
+        
+        # Return file for streaming with proper headers
+        from fastapi.responses import FileResponse
+        from urllib.parse import quote
+        
+        # RFC 5987 encoding for filename with special characters
+        # Properly encode filename for use in header
+        encoded_filename = quote(filename, safe='')
+        
+        return FileResponse(
+            file_path,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error streaming file {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error streaming file")
+
+@app.get("/download-file/{filename}")
+async def download_file(filename: str):
+    """Download an MP3 file"""
+    try:
+        # URL decode the filename (handles spaces, special chars)
+        from urllib.parse import unquote
+        filename = unquote(filename)
+        
+        # Sanitize filename to prevent directory traversal
+        filename = filename.strip()
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        file_path = download_path / filename
+        
+        # Check if file exists
+        if not file_path.exists():
+            logger.warning(f"Download request for non-existent file: {filename}")
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Check if file is actually an MP3
+        if not filename.lower().endswith('.mp3'):
+            raise HTTPException(status_code=400, detail="Only MP3 files can be downloaded")
+        
+        logger.info(f"Downloading file: {filename}")
+        
+        # Return file for download with proper headers
+        from fastapi.responses import FileResponse
+        from urllib.parse import quote
+        
+        # RFC 5987 encoding for filename with special characters
+        # Properly encode filename for use in header
+        encoded_filename = quote(filename, safe='')
+        
+        return FileResponse(
+            file_path,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading file {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error downloading file")
 
 if __name__ == "__main__":
     import uvicorn
