@@ -12,7 +12,7 @@ services:
       - "8000:8000"
     volumes:
       # Mount the downloads directory - configure this path on your NAS
-      - /mnt/downloads:/downloads
+      - PLACEHOLDER_PATH:/downloads
       # Mount config directory for persistence
       - youtube-dl-config:/app/config
     restart: unless-stopped

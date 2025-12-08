@@ -48,8 +48,26 @@ def save_config(config):
 config = load_config()
 
 # Ensure download directory exists
-download_path = Path(config["download_path"])
-download_path.mkdir(parents=True, exist_ok=True)
+download_path_str = os.getenv('DOWNLOAD_PATH') or config.get("download_path", "/downloads")
+
+logger.info(f"Using download path: {download_path_str}")
+
+download_path = Path(download_path_str)
+
+try:
+    download_path.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Download directory ready: {download_path.absolute()}")
+except PermissionError as e:
+    logger.error(f"Permission denied creating download directory at {download_path_str}")
+    logger.error(f"Error: {str(e)}")
+    logger.error("Make sure:")
+    logger.error("  - Directory exists and is writable")
+    logger.error("  - DOWNLOAD_PATH environment variable is set correctly")
+    logger.error("  - Container volume is mounted correctly")
+    raise
+except Exception as e:
+    logger.error(f"Error creating download directory: {str(e)}")
+    raise
 
 # Track ongoing downloads
 downloads = {}
