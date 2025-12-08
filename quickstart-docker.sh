@@ -51,7 +51,7 @@ if [ -z "$DOWNLOAD_PATH" ]; then
     echo "Using default: $DOWNLOAD_PATH"
 fi
 
-# Create download directory if it doesn't exist (might not work on all systems)
+# Create download directory if it doesn't exist
 echo "📁 Creating download directory..."
 mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || echo "⚠️  Could not create directory. Please ensure it exists and is writable."
 
@@ -60,16 +60,29 @@ echo "⚙️  Generating docker-compose.yml from template..."
 cp "$APP_DIR/docker-compose.yml.template" "$APP_DIR/docker-compose.yml"
 
 # Update docker-compose.yml with the custom path
-echo "⚙️  Updating configuration..."
+echo "⚙️  Updating configuration with path: $DOWNLOAD_PATH"
+
+# Escape special characters for sed
+ESCAPED_PATH=$(printf '%s\n' "$DOWNLOAD_PATH" | sed -e 's/[\/&]/\\&/g')
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    sed -i '' "s|/mnt/downloads|$DOWNLOAD_PATH|g" "$APP_DIR/docker-compose.yml"
+    # macOS - need different escape handling
+    sed -i '' "s|PLACEHOLDER_PATH|$ESCAPED_PATH|g" "$APP_DIR/docker-compose.yml"
 else
     # Linux
-    sed -i "s|/mnt/downloads|$DOWNLOAD_PATH|g" "$APP_DIR/docker-compose.yml"
+    sed -i "s|PLACEHOLDER_PATH|$ESCAPED_PATH|g" "$APP_DIR/docker-compose.yml"
 fi
 
+# Verify the replacement worked
+if grep -q "PLACEHOLDER_PATH" "$APP_DIR/docker-compose.yml"; then
+    echo "❌ Error: Failed to replace path placeholder in docker-compose.yml"
+    echo "Please check that the template contains PLACEHOLDER_PATH"
+    exit 1
+fi
+
+echo "✅ docker-compose.yml created with download path: $DOWNLOAD_PATH"
 echo ""
+
 echo "🔨 Building Docker images..."
 docker-compose -f "$APP_DIR/docker-compose.yml" build
 
