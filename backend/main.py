@@ -79,6 +79,7 @@ class DownloadRequest(BaseModel):
     url: str
     custom_name: Optional[str] = None
     download_list: bool = False
+    folder_name: Optional[str] = None
 
 class ConfigUpdate(BaseModel):
     download_path: Optional[str] = None
@@ -171,8 +172,8 @@ async def download_youtube(request: DownloadRequest, background_tasks: Backgroun
         "mac_address": mac_address
     }
     
-    background_tasks.add_task(perform_download, download_id, url, request.custom_name, request.download_list)
-    
+    background_tasks.add_task(perform_download, download_id, url, request.custom_name, request.download_list, request.folder_name)
+
     return {
         "download_id": download_id,
         "status": "queued",
@@ -202,33 +203,69 @@ async def list_downloads():
     return {item[0]: item[1] for item in sorted_downloads}
 
 @app.get("/files")
-async def list_downloaded_files():
+async def list_downloaded_files(path: str = ""):
     """
-    List all downloaded MP3 files
+    List downloaded MP3 files and folders in a given directory
+    Returns items list and metadata (total_files count for root path)
     """
-    mp3_files = []
-    
-    for root, dirs, files in os.walk(download_path):
-        for file in files:
-            if file.endswith('.mp3'):
-                file_path = Path(root) / file
-                stat_info = file_path.stat()
-                file_size = stat_info.st_size
-                
-                # Send timestamp as Unix timestamp, let frontend convert to local time
-                mtime_timestamp = stat_info.st_mtime
-                
-                file_obj = {
-                    "name": file,
-                    "path": str(file_path.relative_to(download_path)),
-                    "size": int(file_size),
+    # Sanitize path to prevent directory traversal
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    # Build current directory path
+    current_path = download_path / path if path else download_path
+
+    # Check if directory exists
+    if not current_path.exists() or not current_path.is_dir():
+        raise HTTPException(status_code=404, detail="Directory not found")
+
+    items = []
+
+    # List immediate children only (no recursive walk)
+    try:
+        for item in current_path.iterdir():
+            relative_path = str(item.relative_to(download_path))
+            stat_info = item.stat()
+            mtime_timestamp = stat_info.st_mtime
+
+            if item.is_dir():
+                # Count MP3 files in folder
+                mp3_count = sum(1 for f in item.rglob('*.mp3'))
+                items.append({
+                    "name": item.name,
+                    "path": relative_path,
+                    "type": "folder",
+                    "size": 0,
+                    "modified": mtime_timestamp,
+                    "file_count": mp3_count
+                })
+            elif item.is_file() and item.suffix.lower() == '.mp3':
+                items.append({
+                    "name": item.name,
+                    "path": relative_path,
+                    "type": "file",
+                    "size": int(stat_info.st_size),
                     "modified": mtime_timestamp
-                }
-                logger.info(f"File: {file}, Size: {file_size}, Modified: {mtime_timestamp}")
-                mp3_files.append(file_obj)
-    
-    logger.info(f"Total files found: {len(mp3_files)}")
-    return sorted(mp3_files, key=lambda x: x["modified"], reverse=True)
+                })
+
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Sort: folders first, then by modified time
+    items.sort(key=lambda x: (x["type"] == "file", -x["modified"]))
+
+    # For root path queries, include total file count across all folders
+    # This is needed for HACS integration and dashboard stats
+    if not path:
+        total_files = sum(1 for _ in download_path.rglob('*.mp3'))
+        return {
+            "items": items,
+            "total_files": total_files,
+            "current_path": path
+        }
+
+    # For subfolder queries, return just the items (backwards compatible)
+    return items
 
 def is_valid_youtube_url(url: str) -> bool:
     """Validate if URL is a YouTube URL"""
@@ -236,22 +273,74 @@ def is_valid_youtube_url(url: str) -> bool:
     youtube_domains = ["youtube.com", "youtu.be"]
     return any(domain in url for domain in youtube_domains)
 
-def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False):
+def sanitize_folder_name(name: str) -> str:
+    """Sanitize folder name by removing invalid characters"""
+    # Remove or replace invalid characters for folder names
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '_')
+    # Remove leading/trailing dots and spaces
+    name = name.strip('. ')
+    # Limit length
+    return name[:100] if len(name) > 100 else name
+
+def get_unique_folder_name(base_path: Path, folder_name: str) -> str:
+    """Get unique folder name by appending (2), (3), etc if folder exists"""
+    folder_path = base_path / folder_name
+    if not folder_path.exists():
+        return folder_name
+
+    counter = 2
+    while True:
+        new_name = f"{folder_name} ({counter})"
+        new_path = base_path / new_name
+        if not new_path.exists():
+            return new_name
+        counter += 1
+
+def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False, folder_name: Optional[str] = None):
     """
     Perform the actual download in background
     """
+    failed_videos = []
+    successful_count = 0
+
     try:
         with downloads_lock:
             downloads[download_id]["status"] = "downloading"
-        
+
         output_path = download_path
-        
-        # Create output path subdirectory if organizing
-        if config.get("organize_by_date"):
+
+        # For playlists, create a folder (overrides organize_by_date)
+        if download_list:
+            # First extract info to get playlist title
+            with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+                # Use custom folder name if provided, otherwise use playlist title
+                if folder_name:
+                    playlist_title = folder_name
+                else:
+                    playlist_title = info.get('title', 'Playlist')
+
+                # Sanitize and create folder name with date
+                sanitized_title = sanitize_folder_name(playlist_title)
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                base_folder_name = f"{sanitized_title} [{date_str}]"
+
+                # Get unique folder name to handle duplicates
+                unique_folder_name = get_unique_folder_name(download_path, base_folder_name)
+                output_path = download_path / unique_folder_name
+                output_path.mkdir(exist_ok=True)
+
+                logger.info(f"Created playlist folder: {unique_folder_name}")
+
+        # For single videos, use organize_by_date if enabled
+        elif config.get("organize_by_date"):
             date_folder = datetime.now().strftime("%Y-%m-%d")
             output_path = download_path / date_folder
             output_path.mkdir(exist_ok=True)
-        
+
         # Configure yt-dlp
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -265,41 +354,92 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
             'no_warnings': False,
             'progress_hooks': [lambda d: update_progress(download_id, d)],
         }
-        
-        # If not downloading list, only download first item
-        if not download_list:
+
+        # For playlists, continue on errors (skip unavailable videos)
+        if download_list:
+            ydl_opts['ignoreerrors'] = True
+            ydl_opts['quiet'] = True
+
+            # Custom logger to track failed videos
+            class PlaylistLogger:
+                def __init__(self):
+                    self.failed = []
+
+                def debug(self, msg):
+                    # Capture unavailable video messages
+                    if 'Video unavailable' in msg or 'has been terminated' in msg or 'is not available' in msg:
+                        logger.warning(f"Skipping unavailable video: {msg}")
+
+                def warning(self, msg):
+                    if 'unavailable' in msg.lower() or 'terminated' in msg.lower():
+                        logger.warning(f"Playlist warning: {msg}")
+                        self.failed.append(msg)
+
+                def error(self, msg):
+                    if 'unavailable' in msg.lower() or 'terminated' in msg.lower():
+                        logger.warning(f"Skipping video with error: {msg}")
+                        self.failed.append(msg)
+
+            playlist_logger = PlaylistLogger()
+            ydl_opts['logger'] = playlist_logger
+        else:
+            # For single videos, only download first item
             ydl_opts['playlist_items'] = '1'
-        
+
         def check_cancel(d):
             """Check if download should be cancelled"""
             with downloads_lock:
                 if download_id in cancel_downloads:
                     return True
             return False
-        
+
         # Add cancellation hook
         ydl_opts['progress_hooks'].append(lambda d: (
             check_cancel(d) and (_ for _ in ()).throw(Exception("Download cancelled by user"))
         ))
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Unknown')
-            
-            with downloads_lock:
-                downloads[download_id].update({
-                    "status": "completed",
-                    "title": title,
-                    "progress": 100,
-                    "completed_at": datetime.now().timestamp()
-                })
-            
+
+            if download_list:
+                # For playlists, count successful downloads
+                title = info.get('title', 'Playlist')
+                entries = info.get('entries', [])
+                total_videos = len([e for e in entries if e is not None])
+                successful_count = len([e for e in entries if e is not None and not e.get('_type') == 'url'])
+                failed_count = len(playlist_logger.failed) if hasattr(ydl_opts.get('logger'), 'failed') else 0
+
+                logger.info(f"Playlist download completed: {successful_count} successful, {failed_count} skipped")
+
+                status_msg = f"Downloaded {successful_count} videos"
+                if failed_count > 0:
+                    status_msg += f" ({failed_count} unavailable videos skipped)"
+
+                with downloads_lock:
+                    downloads[download_id].update({
+                        "status": "completed",
+                        "title": title,
+                        "progress": 100,
+                        "completed_at": datetime.now().timestamp(),
+                        "message": status_msg
+                    })
+            else:
+                # For single videos
+                title = info.get('title', 'Unknown')
+                with downloads_lock:
+                    downloads[download_id].update({
+                        "status": "completed",
+                        "title": title,
+                        "progress": 100,
+                        "completed_at": datetime.now().timestamp()
+                    })
+
             logger.info(f"Download completed: {download_id} - {title}")
-    
+
     except Exception as e:
         error_msg = str(e)
         is_cancelled = "cancelled" in error_msg.lower()
-        
+
         logger.error(f"Download failed: {download_id} - {error_msg}")
         with downloads_lock:
             downloads[download_id].update({
@@ -309,7 +449,7 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
             })
             # Remove from cancel set if it was cancelled
             cancel_downloads.discard(download_id)
-    
+
     finally:
         # Clean up cancel flag
         with downloads_lock:
@@ -350,77 +490,80 @@ async def cancel_download(download_id: str):
     logger.info(f"Cancel requested for download: {download_id}")
     return {"message": "Cancellation requested", "download_id": download_id}
 
-@app.delete("/files/{filename}")
-async def delete_file(filename: str):
+@app.delete("/files/{file_path:path}")
+async def delete_file(file_path: str):
     """Delete an MP3 file from the filesystem"""
     try:
         from urllib.parse import unquote
-        filename = unquote(filename)
-        
-        # Sanitize filename to prevent directory traversal
-        filename = filename.strip()
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
-        
-        file_path = download_path / filename
-        
+        file_path = unquote(file_path)
+
+        # Sanitize path to prevent directory traversal
+        file_path = file_path.strip()
+        if ".." in file_path or file_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        full_path = download_path / file_path
+
         # Check if file exists
-        if not file_path.exists():
-            logger.warning(f"Delete request for non-existent file: {filename}")
+        if not full_path.exists():
+            logger.warning(f"Delete request for non-existent file: {file_path}")
             raise HTTPException(status_code=404, detail="File not found")
-        
-        # Check if file is actually an MP3
-        if not filename.lower().endswith('.mp3'):
+
+        # Check if it's a file and is an MP3
+        if not full_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        if not file_path.lower().endswith('.mp3'):
             raise HTTPException(status_code=400, detail="Only MP3 files can be deleted")
-        
+
         # Delete the file
-        file_path.unlink()
-        logger.info(f"Deleted file: {filename}")
-        
-        return {"message": f"File deleted: {filename}"}
-    
+        full_path.unlink()
+        logger.info(f"Deleted file: {file_path}")
+
+        return {"message": f"File deleted: {file_path}"}
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting file {filename}: {str(e)}")
+        logger.error(f"Error deleting file {file_path}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error deleting file")
 
-@app.get("/play/{filename}")
-async def play_file(filename: str):
+@app.get("/play/{file_path:path}")
+async def play_file(file_path: str):
     """Stream an MP3 file for playback"""
     try:
-        # URL decode the filename (handles spaces, special chars)
+        # URL decode the file path (handles spaces, special chars)
         from urllib.parse import unquote
-        filename = unquote(filename)
-        
-        # Sanitize filename to prevent directory traversal
-        filename = filename.strip()
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
-        
-        file_path = download_path / filename
-        
+        file_path = unquote(file_path)
+
+        # Sanitize path to prevent directory traversal
+        file_path = file_path.strip()
+        if ".." in file_path or file_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        full_path = download_path / file_path
+
         # Check if file exists
-        if not file_path.exists():
-            logger.warning(f"Play request for non-existent file: {filename}")
+        if not full_path.exists():
+            logger.warning(f"Play request for non-existent file: {file_path}")
             raise HTTPException(status_code=404, detail="File not found")
-        
+
         # Check if file is actually an MP3
-        if not filename.lower().endswith('.mp3'):
+        if not file_path.lower().endswith('.mp3'):
             raise HTTPException(status_code=400, detail="Only MP3 files can be played")
-        
-        logger.info(f"Streaming file: {filename}")
-        
+
+        logger.info(f"Streaming file: {file_path}")
+
         # Return file for streaming with proper headers
         from fastapi.responses import FileResponse
         from urllib.parse import quote
-        
-        # RFC 5987 encoding for filename with special characters
-        # Properly encode filename for use in header
+
+        # Get just the filename for the header
+        filename = Path(file_path).name
         encoded_filename = quote(filename, safe='')
-        
+
         return FileResponse(
-            file_path,
+            full_path,
             media_type="audio/mpeg",
             headers={
                 "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
@@ -429,45 +572,45 @@ async def play_file(filename: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error streaming file {filename}: {str(e)}")
+        logger.error(f"Error streaming file {file_path}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error streaming file")
 
-@app.get("/download-file/{filename}")
-async def download_file(filename: str):
+@app.get("/download-file/{file_path:path}")
+async def download_file(file_path: str):
     """Download an MP3 file"""
     try:
-        # URL decode the filename (handles spaces, special chars)
+        # URL decode the file path (handles spaces, special chars)
         from urllib.parse import unquote
-        filename = unquote(filename)
-        
-        # Sanitize filename to prevent directory traversal
-        filename = filename.strip()
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
-        
-        file_path = download_path / filename
-        
+        file_path = unquote(file_path)
+
+        # Sanitize path to prevent directory traversal
+        file_path = file_path.strip()
+        if ".." in file_path or file_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        full_path = download_path / file_path
+
         # Check if file exists
-        if not file_path.exists():
-            logger.warning(f"Download request for non-existent file: {filename}")
+        if not full_path.exists():
+            logger.warning(f"Download request for non-existent file: {file_path}")
             raise HTTPException(status_code=404, detail="File not found")
-        
+
         # Check if file is actually an MP3
-        if not filename.lower().endswith('.mp3'):
+        if not file_path.lower().endswith('.mp3'):
             raise HTTPException(status_code=400, detail="Only MP3 files can be downloaded")
-        
-        logger.info(f"Downloading file: {filename}")
-        
+
+        logger.info(f"Downloading file: {file_path}")
+
         # Return file for download with proper headers
         from fastapi.responses import FileResponse
         from urllib.parse import quote
-        
-        # RFC 5987 encoding for filename with special characters
-        # Properly encode filename for use in header
+
+        # Get just the filename for the header
+        filename = Path(file_path).name
         encoded_filename = quote(filename, safe='')
-        
+
         return FileResponse(
-            file_path,
+            full_path,
             media_type="audio/mpeg",
             headers={
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
@@ -476,8 +619,85 @@ async def download_file(filename: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error downloading file {filename}: {str(e)}")
+        logger.error(f"Error downloading file {file_path}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error downloading file")
+
+class RenameRequest(BaseModel):
+    old_name: str
+    new_name: str
+
+@app.post("/folders/rename")
+async def rename_folder(request: RenameRequest):
+    """Rename a folder"""
+    try:
+        # Sanitize paths
+        if ".." in request.old_name or ".." in request.new_name:
+            raise HTTPException(status_code=400, detail="Invalid folder name")
+        if "/" in request.old_name or "\\" in request.old_name:
+            raise HTTPException(status_code=400, detail="Invalid old folder name")
+
+        old_path = download_path / request.old_name
+
+        # Sanitize new name
+        new_name_sanitized = sanitize_folder_name(request.new_name)
+        new_path = download_path / new_name_sanitized
+
+        # Check if old folder exists
+        if not old_path.exists() or not old_path.is_dir():
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        # Check if new name already exists
+        if new_path.exists():
+            raise HTTPException(status_code=400, detail="A folder with that name already exists")
+
+        # Rename the folder
+        old_path.rename(new_path)
+        logger.info(f"Renamed folder from {request.old_name} to {new_name_sanitized}")
+
+        return {"message": "Folder renamed successfully", "new_name": new_name_sanitized}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error renaming folder: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error renaming folder")
+
+@app.delete("/folders/{folder_path:path}")
+async def delete_folder(folder_path: str):
+    """Delete a folder and all its contents"""
+    try:
+        from urllib.parse import unquote
+        import shutil
+
+        folder_path = unquote(folder_path)
+
+        # Sanitize path to prevent directory traversal
+        folder_path = folder_path.strip()
+        if ".." in folder_path or folder_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid folder path")
+
+        full_path = download_path / folder_path
+
+        # Check if folder exists
+        if not full_path.exists():
+            logger.warning(f"Delete request for non-existent folder: {folder_path}")
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        # Check if it's a directory
+        if not full_path.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a folder")
+
+        # Delete the folder and all contents
+        shutil.rmtree(full_path)
+        logger.info(f"Deleted folder: {folder_path}")
+
+        return {"message": f"Folder deleted: {folder_path}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting folder {folder_path}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error deleting folder")
 
 if __name__ == "__main__":
     import uvicorn

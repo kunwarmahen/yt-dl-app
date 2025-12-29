@@ -16,6 +16,11 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [downloadList, setDownloadList] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [currentPath, setCurrentPath] = useState("");
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameFolder, setRenameFolder] = useState(null);
+  const [newFolderName, setNewFolderName] = useState("");
   const itemsPerPage = 10;
 
   // Load initial data
@@ -30,7 +35,7 @@ function App() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentPath]);
 
   const loadConfig = async () => {
     try {
@@ -57,10 +62,21 @@ function App() {
 
   const loadFiles = async () => {
     try {
-      const res = await fetch(`${API_BASE}/files`);
+      const url = currentPath
+        ? `${API_BASE}/files?path=${encodeURIComponent(currentPath)}`
+        : `${API_BASE}/files`;
+      const res = await fetch(url);
       const data = await res.json();
       console.log("Files loaded from backend:", data);
-      setFiles(data);
+
+      // Handle new format (object with items) or old format (array)
+      if (data && typeof data === 'object' && data.items) {
+        setFiles(data.items);
+      } else if (Array.isArray(data)) {
+        setFiles(data);
+      } else {
+        setFiles([]);
+      }
     } catch (err) {
       console.error("Failed to load files:", err);
     }
@@ -78,6 +94,7 @@ function App() {
           url: url.trim(),
           custom_name: customName.trim() || undefined,
           download_list: downloadList,
+          folder_name: downloadList && folderName.trim() ? folderName.trim() : undefined,
         }),
       });
 
@@ -86,6 +103,7 @@ function App() {
         setUrl("");
         setCustomName("");
         setDownloadList(false);
+        setFolderName("");
         loadDownloads();
       } else {
         const err = await res.json();
@@ -199,26 +217,103 @@ function App() {
     document.body.removeChild(link);
   };
 
-  const handleDeleteFile = async (filename) => {
-    if (window.confirm(`Delete "${filename}"?`)) {
-      try {
-        const res = await fetch(
-          `${API_BASE}/files/${encodeURIComponent(filename)}`,
-          {
-            method: "DELETE",
-          }
-        );
-
-        if (res.ok) {
-          loadFiles();
-        } else {
-          const err = await res.json();
-          setError(err.detail || "Failed to delete file");
+  const handleDeleteFile = async (filePath) => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/files/${encodeURIComponent(filePath)}`,
+        {
+          method: "DELETE",
         }
-      } catch (err) {
-        console.error("Delete error:", err);
-        setError("Error deleting file");
+      );
+
+      if (res.ok) {
+        loadFiles();
+      } else {
+        const err = await res.json();
+        setError(err.detail || "Failed to delete file");
       }
+    } catch (err) {
+      console.error("Delete error:", err);
+      setError("Error deleting file");
+    }
+  };
+
+  const handleDeleteFolder = async (folderPath) => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/folders/${encodeURIComponent(folderPath)}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      if (res.ok) {
+        loadFiles();
+      } else {
+        const err = await res.json();
+        setError(err.detail || "Failed to delete folder");
+      }
+    } catch (err) {
+      console.error("Delete folder error:", err);
+      setError("Error deleting folder");
+    }
+  };
+
+  const handleFolderClick = (folderPath) => {
+    setCurrentPath(folderPath);
+    setSearchQuery("");
+    setCurrentPage(1);
+  };
+
+  const handleNavigateUp = () => {
+    if (!currentPath) return;
+    const parts = currentPath.split("/");
+    parts.pop();
+    setCurrentPath(parts.join("/"));
+    setSearchQuery("");
+    setCurrentPage(1);
+  };
+
+  const handleNavigateToRoot = () => {
+    setCurrentPath("");
+    setSearchQuery("");
+    setCurrentPage(1);
+  };
+
+  const handleRenameClick = (folder) => {
+    setRenameFolder(folder);
+    setNewFolderName(folder.name);
+    setShowRenameModal(true);
+  };
+
+  const handleRenameSubmit = async () => {
+    if (!newFolderName.trim()) {
+      setError("Folder name cannot be empty");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/folders/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          old_name: renameFolder.name,
+          new_name: newFolderName.trim(),
+        }),
+      });
+
+      if (res.ok) {
+        setShowRenameModal(false);
+        setRenameFolder(null);
+        setNewFolderName("");
+        loadFiles();
+      } else {
+        const err = await res.json();
+        setError(err.detail || "Failed to rename folder");
+      }
+    } catch (err) {
+      console.error("Rename error:", err);
+      setError("Error renaming folder");
     }
   };
 
@@ -342,6 +437,19 @@ function App() {
               </small>
             </div>
 
+            {downloadList && (
+              <div className="form-group">
+                <label>Folder Name (Optional)</label>
+                <input
+                  type="text"
+                  value={folderName}
+                  onChange={(e) => setFolderName(e.target.value)}
+                  placeholder="Leave blank to use playlist title"
+                />
+                <small>Custom name for the playlist folder</small>
+              </div>
+            )}
+
             <button type="submit" className="btn btn-primary btn-large">
               Download MP3
             </button>
@@ -391,6 +499,7 @@ function App() {
                       )}
 
                       {dl.error && <p className="error-text">{dl.error}</p>}
+                      {dl.message && <p className="success-text">{dl.message}</p>}
 
                       <p className="time-text">
                         {formatDateTime(dl.created_at)}
@@ -449,6 +558,42 @@ function App() {
               />
             </div>
 
+            {/* Breadcrumb Navigation */}
+            <div className="breadcrumb-nav">
+              <button
+                className="breadcrumb-btn"
+                onClick={handleNavigateToRoot}
+                disabled={!currentPath}
+              >
+                🏠 Home
+              </button>
+              {currentPath && (
+                <>
+                  {currentPath.split("/").map((folder, index, arr) => (
+                    <React.Fragment key={index}>
+                      <span className="breadcrumb-separator">/</span>
+                      <button
+                        className="breadcrumb-btn"
+                        onClick={() => {
+                          const path = arr.slice(0, index + 1).join("/");
+                          setCurrentPath(path);
+                        }}
+                      >
+                        📁 {folder}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                  <button
+                    className="breadcrumb-back"
+                    onClick={handleNavigateUp}
+                    title="Go back"
+                  >
+                    ← Back
+                  </button>
+                </>
+              )}
+            </div>
+
             {filteredFiles.length === 0 ? (
               <div className="no-results">
                 <p>No files match your search "{searchQuery}"</p>
@@ -457,43 +602,75 @@ function App() {
               <>
                 <div className="files-table">
                   <div className="table-header">
-                    <div className="col-name">Filename</div>
+                    <div className="col-name">Name</div>
                     <div className="col-size">Size</div>
                     <div className="col-date">Modified</div>
                     <div className="col-actions">Actions</div>
                   </div>
-                  {paginatedFiles.map((file, idx) => (
+                  {paginatedFiles.map((item, idx) => (
                     <div key={idx} className="table-row">
-                      <div className="col-name">
-                        <span className="file-icon">🎵</span>
-                        {file.name}
+                      <div
+                        className="col-name"
+                        style={item.type === "folder" ? { cursor: "pointer" } : {}}
+                        onClick={() => item.type === "folder" && handleFolderClick(item.path)}
+                      >
+                        <span className="file-icon">
+                          {item.type === "folder" ? "📁" : "🎵"}
+                        </span>
+                        {item.name}
+                        {item.type === "folder" && (
+                          <span className="file-count"> ({item.file_count} files)</span>
+                        )}
                       </div>
-                      <div className="col-size">{formatBytes(file.size)}</div>
+                      <div className="col-size">
+                        {item.type === "folder" ? "-" : formatBytes(item.size)}
+                      </div>
                       <div className="col-date">
-                        {formatTime(file.modified)}
+                        {formatTime(item.modified)}
                       </div>
                       <div className="col-actions">
-                        <button
-                          className="btn-action btn-play"
-                          onClick={() => handlePlayFile(file.name)}
-                          title="Play"
-                        >
-                          ▶️
-                        </button>
-                        <button
-                          className="btn-action btn-download"
-                          onClick={() => handleDownloadFile(file.name)}
-                          title="Download"
-                        >
-                          ⬇️
-                        </button>
-                        <button
-                          className="btn-action btn-delete"
-                          onClick={() => handleDeleteFile(file.name)}
-                          title="Delete"
-                        >
-                          🗑️
-                        </button>
+                        {item.type === "folder" ? (
+                          <>
+                            <button
+                              className="btn-action btn-rename"
+                              onClick={() => handleRenameClick(item)}
+                              title="Rename"
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              className="btn-action btn-delete"
+                              onClick={() => handleDeleteFolder(item.path)}
+                              title="Delete folder"
+                            >
+                              🗑️
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className="btn-action btn-play"
+                              onClick={() => handlePlayFile(item.path)}
+                              title="Play"
+                            >
+                              ▶️
+                            </button>
+                            <button
+                              className="btn-action btn-download"
+                              onClick={() => handleDownloadFile(item.path)}
+                              title="Download"
+                            >
+                              ⬇️
+                            </button>
+                            <button
+                              className="btn-action btn-delete"
+                              onClick={() => handleDeleteFile(item.path)}
+                              title="Delete"
+                            >
+                              🗑️
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -533,6 +710,36 @@ function App() {
           </section>
         )}
       </main>
+
+      {/* Rename Modal */}
+      {showRenameModal && (
+        <div className="modal-overlay" onClick={() => setShowRenameModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2>Rename Folder</h2>
+            <div className="form-group">
+              <label>New folder name</label>
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && handleRenameSubmit()}
+                autoFocus
+              />
+            </div>
+            <div className="button-group">
+              <button className="btn btn-primary" onClick={handleRenameSubmit}>
+                Rename
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowRenameModal(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="footer">
         <p>Running on your local network • No tracking, no ads</p>
