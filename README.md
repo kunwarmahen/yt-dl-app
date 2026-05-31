@@ -6,7 +6,7 @@ A self-hosted, local-network YouTube to MP3 downloader running on your NAS. Anyo
 
 - 🌐 **Web Interface** - Beautiful, responsive UI accessible from any device on your local network
 - 📱 **Mobile Friendly** - Works perfectly on iOS and Android
-- 🎬 **YouTube Integration** - Paste any YouTube URL and download audio as MP3
+- 🎬 **YouTube Integration** - Paste any YouTube URL and download audio as MP3 or video as MP4
 - 📁 **Configurable Storage** - Choose where downloaded files are saved
 - 🔄 **Real-time Updates** - Watch downloads progress in real-time
 - 🎯 **Local Only** - Everything runs on your NAS, no cloud uploads, no tracking
@@ -115,9 +115,10 @@ Example: `http://192.168.1.100`
 1. Open the app on any device on your network
 2. Paste a YouTube URL in the "Add Video" section
 3. (Optional) Enter a custom filename
-4. Click "Download MP3"
-5. Monitor progress in the "Recent Downloads" section
-6. Downloaded files appear in the "Downloaded Files" section
+4. (Optional) Check "Download as video (MP4)" to save as video instead of audio — default is MP3
+5. Click "Download MP3" (or "Download MP4" if video is selected)
+6. Monitor progress in the "Recent Downloads" section
+7. Downloaded files appear in the "Downloaded Files" section
 
 ### Configurable Options
 
@@ -141,9 +142,9 @@ GET http://<nas-ip>:8000/config
 POST http://<nas-ip>:8000/config
 Body: {"download_path": "/path/to/downloads"}
 
-# Start download
+# Start download (MP3 by default; set download_video: true for MP4)
 POST http://<nas-ip>:8000/download
-Body: {"url": "https://youtube.com/watch?v=...", "custom_name": "My Song"}
+Body: {"url": "https://youtube.com/watch?v=...", "custom_name": "My Song", "download_video": false}
 
 # Get all downloads
 GET http://<nas-ip>:8000/downloads
@@ -251,7 +252,7 @@ docker-compose down -v  # -v removes volumes
 
 - **Recommended NAS**: At least 2GB RAM, multi-core processor
 - **Concurrent Downloads**: Default is 3, adjustable in config
-- **Storage**: Plan ~10MB per song, varies by length and quality
+- **Storage**: Plan ~10MB per MP3 song; MP4 video files are significantly larger (varies by resolution and length)
 
 ## Security & Privacy
 

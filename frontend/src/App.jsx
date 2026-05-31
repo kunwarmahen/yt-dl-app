@@ -17,6 +17,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [downloadList, setDownloadList] = useState(false);
   const [folderName, setFolderName] = useState("");
+  const [downloadVideo, setDownloadVideo] = useState(false);
   const [currentPath, setCurrentPath] = useState("");
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameFolder, setRenameFolder] = useState(null);
@@ -95,6 +96,7 @@ function App() {
           custom_name: customName.trim() || undefined,
           download_list: downloadList,
           folder_name: downloadList && folderName.trim() ? folderName.trim() : undefined,
+          download_video: downloadVideo,
         }),
       });
 
@@ -104,6 +106,7 @@ function App() {
         setCustomName("");
         setDownloadList(false);
         setFolderName("");
+        setDownloadVideo(false);
         loadDownloads();
       } else {
         const err = await res.json();
@@ -450,8 +453,24 @@ function App() {
               </div>
             )}
 
+            <div className="form-group checkbox-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={downloadVideo}
+                  onChange={(e) => setDownloadVideo(e.target.checked)}
+                />
+                Download as video (MP4)
+              </label>
+              <small>
+                {downloadVideo
+                  ? "Will download as MP4 video file"
+                  : "Will download as MP3 audio file (default)"}
+              </small>
+            </div>
+
             <button type="submit" className="btn btn-primary btn-large">
-              Download MP3
+              {downloadVideo ? "Download MP4" : "Download MP3"}
             </button>
           </form>
         </section>
@@ -615,7 +634,7 @@ function App() {
                         onClick={() => item.type === "folder" && handleFolderClick(item.path)}
                       >
                         <span className="file-icon">
-                          {item.type === "folder" ? "📁" : "🎵"}
+                          {item.type === "folder" ? "📁" : item.name.toLowerCase().endsWith('.mp4') ? "🎬" : "🎵"}
                         </span>
                         {item.name}
                         {item.type === "folder" && (

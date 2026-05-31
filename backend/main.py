@@ -80,6 +80,7 @@ class DownloadRequest(BaseModel):
     custom_name: Optional[str] = None
     download_list: bool = False
     folder_name: Optional[str] = None
+    download_video: bool = False
 
 class ConfigUpdate(BaseModel):
     download_path: Optional[str] = None
@@ -172,7 +173,7 @@ async def download_youtube(request: DownloadRequest, background_tasks: Backgroun
         "mac_address": mac_address
     }
     
-    background_tasks.add_task(perform_download, download_id, url, request.custom_name, request.download_list, request.folder_name)
+    background_tasks.add_task(perform_download, download_id, url, request.custom_name, request.download_list, request.folder_name, request.download_video)
 
     return {
         "download_id": download_id,
@@ -229,17 +230,16 @@ async def list_downloaded_files(path: str = ""):
             mtime_timestamp = stat_info.st_mtime
 
             if item.is_dir():
-                # Count MP3 files in folder
-                mp3_count = sum(1 for f in item.rglob('*.mp3'))
+                media_count = sum(1 for f in item.rglob('*') if f.suffix.lower() in ('.mp3', '.mp4'))
                 items.append({
                     "name": item.name,
                     "path": relative_path,
                     "type": "folder",
                     "size": 0,
                     "modified": mtime_timestamp,
-                    "file_count": mp3_count
+                    "file_count": media_count
                 })
-            elif item.is_file() and item.suffix.lower() == '.mp3':
+            elif item.is_file() and item.suffix.lower() in ('.mp3', '.mp4'):
                 items.append({
                     "name": item.name,
                     "path": relative_path,
@@ -257,7 +257,7 @@ async def list_downloaded_files(path: str = ""):
     # For root path queries, include total file count across all folders
     # This is needed for HACS integration and dashboard stats
     if not path:
-        total_files = sum(1 for _ in download_path.rglob('*.mp3'))
+        total_files = sum(1 for f in download_path.rglob('*') if f.suffix.lower() in ('.mp3', '.mp4'))
         return {
             "items": items,
             "total_files": total_files,
@@ -298,7 +298,7 @@ def get_unique_folder_name(base_path: Path, folder_name: str) -> str:
             return new_name
         counter += 1
 
-def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False, folder_name: Optional[str] = None):
+def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False, folder_name: Optional[str] = None, download_video: bool = False):
     """
     Perform the actual download in background
     """
@@ -342,18 +342,28 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
             output_path.mkdir(exist_ok=True)
 
         # Configure yt-dlp
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': str(output_path / (custom_name or '%(title)s')),
-            'quiet': False,
-            'no_warnings': False,
-            'progress_hooks': [lambda d: update_progress(download_id, d)],
-        }
+        if download_video:
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+                'outtmpl': str(output_path / (custom_name or '%(title)s')),
+                'quiet': False,
+                'no_warnings': False,
+                'progress_hooks': [lambda d: update_progress(download_id, d)],
+            }
+        else:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': str(output_path / (custom_name or '%(title)s')),
+                'quiet': False,
+                'no_warnings': False,
+                'progress_hooks': [lambda d: update_progress(download_id, d)],
+            }
 
         # For playlists, continue on errors (skip unavailable videos)
         if download_list:
@@ -513,8 +523,8 @@ async def delete_file(file_path: str):
         if not full_path.is_file():
             raise HTTPException(status_code=400, detail="Path is not a file")
 
-        if not file_path.lower().endswith('.mp3'):
-            raise HTTPException(status_code=400, detail="Only MP3 files can be deleted")
+        if not file_path.lower().endswith(('.mp3', '.mp4')):
+            raise HTTPException(status_code=400, detail="Only MP3/MP4 files can be deleted")
 
         # Delete the file
         full_path.unlink()
@@ -548,9 +558,8 @@ async def play_file(file_path: str):
             logger.warning(f"Play request for non-existent file: {file_path}")
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Check if file is actually an MP3
-        if not file_path.lower().endswith('.mp3'):
-            raise HTTPException(status_code=400, detail="Only MP3 files can be played")
+        if not file_path.lower().endswith(('.mp3', '.mp4')):
+            raise HTTPException(status_code=400, detail="Only MP3/MP4 files can be played")
 
         logger.info(f"Streaming file: {file_path}")
 
@@ -561,10 +570,11 @@ async def play_file(file_path: str):
         # Get just the filename for the header
         filename = Path(file_path).name
         encoded_filename = quote(filename, safe='')
+        media_type = "video/mp4" if file_path.lower().endswith('.mp4') else "audio/mpeg"
 
         return FileResponse(
             full_path,
-            media_type="audio/mpeg",
+            media_type=media_type,
             headers={
                 "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
             }
@@ -595,9 +605,8 @@ async def download_file(file_path: str):
             logger.warning(f"Download request for non-existent file: {file_path}")
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Check if file is actually an MP3
-        if not file_path.lower().endswith('.mp3'):
-            raise HTTPException(status_code=400, detail="Only MP3 files can be downloaded")
+        if not file_path.lower().endswith(('.mp3', '.mp4')):
+            raise HTTPException(status_code=400, detail="Only MP3/MP4 files can be downloaded")
 
         logger.info(f"Downloading file: {file_path}")
 
@@ -608,10 +617,11 @@ async def download_file(file_path: str):
         # Get just the filename for the header
         filename = Path(file_path).name
         encoded_filename = quote(filename, safe='')
+        media_type = "video/mp4" if file_path.lower().endswith('.mp4') else "audio/mpeg"
 
         return FileResponse(
             full_path,
-            media_type="audio/mpeg",
+            media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
             }
