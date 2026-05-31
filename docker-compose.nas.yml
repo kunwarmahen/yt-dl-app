@@ -1,0 +1,49 @@
+# NAS deployment compose — uses pre-built images shipped by deploy.sh.
+# DOWNLOAD_PATH is read from .env (written by deploy.sh during nas deploy).
+# Example .env:  DOWNLOAD_PATH=/volume1/music
+#
+# pull_policy: never ensures Docker uses the locally loaded images
+# and never attempts to pull from a registry.
+
+services:
+  backend:
+    image: youtube-downloader-backend:latest
+    pull_policy: never
+    container_name: youtube-downloader-backend
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${DOWNLOAD_PATH:-/downloads}:/downloads
+      - youtube-dl-config:/app/config
+    restart: unless-stopped
+    networks:
+      - youtube-downloader-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    image: youtube-downloader-frontend:latest
+    pull_policy: never
+    container_name: youtube-downloader-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - youtube-downloader-network
+
+volumes:
+  youtube-dl-config:
+    driver: local
+
+networks:
+  youtube-downloader-network:
+    driver: bridge

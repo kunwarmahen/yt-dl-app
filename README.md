@@ -21,9 +21,44 @@ A self-hosted, local-network YouTube to MP3 downloader running on your NAS. Anyo
 
 ## Deployment
 
-### Using Docker or Podman?
+### Recommended: deploy.sh (automated)
 
-This guide uses **Docker Compose**, but the files also work with **Podman**!
+The included `deploy.sh` handles both local dev and remote NAS deployments in one command:
+
+```bash
+# Local — build and start on this machine
+./deploy.sh local up
+
+# NAS — build locally, ship images over SSH, start on NAS
+NAS_HOST=192.168.1.100 NAS_DOWNLOAD_PATH=/volume1/music ./deploy.sh nas deploy
+
+# Re-deploy after code changes (same command)
+NAS_HOST=192.168.1.100 ./deploy.sh nas deploy
+
+# Other useful commands
+./deploy.sh local logs        # tail logs
+./deploy.sh nas logs          # tail NAS logs
+./deploy.sh nas shell         # shell into NAS backend container
+./deploy.sh nas down          # stop NAS containers
+./deploy.sh --help            # full usage
+```
+
+NAS configuration is set via env vars (or `export` before running):
+
+| Variable | Default | Description |
+|---|---|---|
+| `NAS_HOST` | *(required)* | IP or hostname of your NAS |
+| `NAS_USER` | current user | SSH user |
+| `NAS_PATH` | `~/youtube-downloader` | Remote deploy directory |
+| `NAS_DOWNLOAD_PATH` | `~/Music` | Where downloads are saved on NAS |
+| `NAS_SSH_KEY` | SSH agent | Path to SSH private key |
+| `NAS_SSH_PORT` | `22` | SSH port |
+
+> `deploy.sh` auto-detects Docker or Podman and uses whichever is available.
+
+### Manual: Docker or Podman
+
+If you prefer managing compose directly:
 
 - **Docker**: `docker-compose up -d`
 - **Podman**: `podman compose up -d` (built-in, no hyphen)
@@ -229,9 +264,19 @@ docker exec youtube-downloader-backend rm /downloads/song.mp3
 
 ## Updating the Application
 
+### With deploy.sh (recommended)
+
+```bash
+# Pull latest code, then re-deploy to NAS in one step
+git pull
+NAS_HOST=192.168.1.100 ./deploy.sh nas deploy
+```
+
+### Manual
+
 ```bash
 cd /volume1/docker/youtube-downloader
-git pull  # or manually update files
+git pull
 docker-compose build --no-cache
 docker-compose up -d
 ```

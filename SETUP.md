@@ -1,5 +1,11 @@
 # Podman to Docker Migration - Complete Step-by-Step Guide
 
+> **⚡ Shortcut:** The `deploy.sh` script automates this entire workflow in one command:
+> ```bash
+> NAS_HOST=192.168.1.100 NAS_DOWNLOAD_PATH=/volume1/Web/youtube/downloader ./deploy.sh nas deploy
+> ```
+> The manual steps below are kept for reference and troubleshooting.
+
 ## Overview
 
 This guide walks through migrating from Podman (local development) to Docker (NAS deployment) using your actual tested commands.
@@ -543,9 +549,22 @@ sudo docker exec youtube-backend curl http://localhost:8000/health
 
 ## Update Procedure
 
+### With deploy.sh (recommended)
+
+```bash
+cd ~/youtube-downloader
+git pull  # or apply your changes
+
+NAS_HOST=192.168.1.44 NAS_DOWNLOAD_PATH=/volume1/Web/youtube/downloader ./deploy.sh nas deploy
+```
+
+This builds, exports, transfers, stops old containers, loads new images, and starts everything in one step.
+
+### Manual
+
 When you have new images to deploy:
 
-### 1. Build and Export
+#### 1. Build and Export
 
 ```bash
 cd ~/youtube-downloader
@@ -559,7 +578,7 @@ docker save -o youtube-downloader-backend.tar youtube-downloader-backend:latest
 docker save -o youtube-downloader-frontend.tar youtube-downloader-frontend:latest
 ```
 
-### 2. Transfer and Deploy
+#### 2. Transfer and Deploy
 
 ```bash
 # Transfer
@@ -568,13 +587,9 @@ scp youtube-downloader-*.tar admin@192.168.1.44:/home/admin/
 # On NAS
 ssh admin@192.168.1.44
 
-# Stop old containers
-sudo docker stop youtube-backend youtube-frontend
-sudo docker rm youtube-backend youtube-frontend
-
-# Remove old images (optional)
-sudo docker rmi youtube-downloader-backend:latest
-sudo docker rmi youtube-downloader-frontend:latest
+# Stop old containers (by name, regardless of which compose project owns them)
+sudo docker stop youtube-downloader-backend youtube-downloader-frontend 2>/dev/null || true
+sudo docker rm   youtube-downloader-backend youtube-downloader-frontend 2>/dev/null || true
 
 # Load new images
 sudo docker load -i ~/youtube-downloader-backend.tar
@@ -582,8 +597,8 @@ sudo docker load -i ~/youtube-downloader-frontend.tar
 
 # Start new containers
 sudo docker run -d \
-  --name youtube-backend \
-  --network youtube-network \
+  --name youtube-downloader-backend \
+  --network youtube-downloader-network \
   -p 8000:8000 \
   -v /volume1/Web/youtube/downloader:/downloads \
   -e DOWNLOAD_PATH=/downloads \
@@ -591,8 +606,8 @@ sudo docker run -d \
   youtube-downloader-backend:latest
 
 sudo docker run -d \
-  --name youtube-frontend \
-  --network youtube-network \
+  --name youtube-downloader-frontend \
+  --network youtube-downloader-network \
   -p 8080:80 \
   --restart unless-stopped \
   youtube-downloader-frontend:latest
