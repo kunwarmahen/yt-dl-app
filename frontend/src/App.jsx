@@ -349,7 +349,7 @@ function App() {
           <div className="header-content">
             <div>
               <h1>🎵 Home MP3 Hub</h1>
-              <p>Download YouTube audio for your collection</p>
+              <p>Download YouTube and X/Twitter media for your collection</p>
             </div>
             <button
               className="settings-btn"
@@ -404,14 +404,15 @@ function App() {
           <h2>Add Video</h2>
           <form onSubmit={handleSubmit} className="download-form">
             <div className="form-group">
-              <label>YouTube URL</label>
+              <label>Video URL</label>
               <input
                 type="url"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
+                placeholder="https://www.youtube.com/watch?v=... or https://x.com/..."
                 required
               />
+              <small>YouTube and X/Twitter links are supported</small>
             </div>
 
             <div className="form-group">
@@ -505,7 +506,10 @@ function App() {
 
                     <div className="download-content">
                       <h3>{dl.title || "Processing..."}</h3>
-                      <p className="status-text">{dl.status.toUpperCase()}</p>
+                      <p className="status-text">
+                        {dl.platform === "twitter" ? "𝕏 " : ""}
+                        {dl.status.toUpperCase()}
+                      </p>
 
                       {dl.status === "downloading" && (
                         <div className="progress-bar">
@@ -725,7 +729,7 @@ function App() {
 
         {Object.keys(downloads).length === 0 && files.length === 0 && (
           <section className="section empty-state">
-            <p>Share a YouTube link above to get started!</p>
+            <p>Share a YouTube or X/Twitter link above to get started!</p>
           </section>
         )}
       </main>

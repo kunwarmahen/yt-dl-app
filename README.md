@@ -1,12 +1,13 @@
 # 🎵 Home MP3 Hub - YT Downloader
 
-A self-hosted, local-network YouTube to MP3 downloader running on your NAS. Anyone in your household can share YouTube links through a beautiful web interface, and the app automatically downloads and organizes the audio files.
+A self-hosted, local-network YouTube and X/Twitter to MP3 downloader running on your NAS. Anyone in your household can share links through a beautiful web interface, and the app automatically downloads and organizes the audio files.
 
 ## Features
 
 - 🌐 **Web Interface** - Beautiful, responsive UI accessible from any device on your local network
 - 📱 **Mobile Friendly** - Works perfectly on iOS and Android
 - 🎬 **YouTube Integration** - Paste any YouTube URL and download audio as MP3 or video as MP4
+- 𝕏 **X/Twitter Integration** - Paste an x.com or twitter.com post URL for the same MP3/MP4 options, with an automatic twitsave.com fallback when X blocks direct extraction
 - 📁 **Configurable Storage** - Choose where downloaded files are saved
 - 🔄 **Real-time Updates** - Watch downloads progress in real-time
 - 🎯 **Local Only** - Everything runs on your NAS, no cloud uploads, no tracking
@@ -148,7 +149,7 @@ Example: `http://192.168.1.100`
 ### From the Web Interface
 
 1. Open the app on any device on your network
-2. Paste a YouTube URL in the "Add Video" section
+2. Paste a YouTube or X/Twitter URL in the "Add Video" section
 3. (Optional) Enter a custom filename
 4. (Optional) Check "Download as video (MP4)" to save as video instead of audio — default is MP3
 5. Click "Download MP3" (or "Download MP4" if video is selected)
@@ -227,8 +228,8 @@ docker-compose logs backend
 docker-compose logs frontend
 ```
 
-### Download fails with "Invalid YouTube URL"
-- Ensure the URL is a full YouTube link (https://youtube.com/watch?v=...)
+### Download fails with "Unsupported URL"
+- Ensure the URL is a full YouTube link (https://youtube.com/watch?v=...) or X/Twitter post link (https://x.com/user/status/...)
 - Try a different video
 
 ### Can't access from other devices

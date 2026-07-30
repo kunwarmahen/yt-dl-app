@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 import yt_dlp
 import os
+import re
 import json
 from pathlib import Path
 from datetime import datetime
@@ -157,14 +158,16 @@ async def download_youtube(request: DownloadRequest, background_tasks: Backgroun
     logger.info(f"Download request received. URL: {url}, Download list: {request.download_list}, IP: {client_ip}, MAC: {mac_address}")
     
     # Validate URL
-    if not is_valid_youtube_url(url):
-        logger.error(f"Invalid YouTube URL: {url}")
-        raise HTTPException(status_code=400, detail="Invalid YouTube URL")
-    
+    platform = detect_platform(url)
+    if not platform:
+        logger.error(f"Unsupported URL: {url}")
+        raise HTTPException(status_code=400, detail="Unsupported URL. Provide a YouTube or X/Twitter link.")
+
     download_id = f"dl_{int(datetime.now().timestamp() * 1000)}"
     downloads[download_id] = {
         "status": "queued",
         "url": url,
+        "platform": platform,
         "progress": 0,
         "title": None,
         "error": None,
@@ -267,11 +270,22 @@ async def list_downloaded_files(path: str = ""):
     # For subfolder queries, return just the items (backwards compatible)
     return items
 
-def is_valid_youtube_url(url: str) -> bool:
-    """Validate if URL is a YouTube URL"""
+YOUTUBE_DOMAINS = ["youtube.com", "youtu.be"]
+TWITTER_DOMAINS = ["twitter.com", "x.com", "fxtwitter.com", "vxtwitter.com"]
+
+def detect_platform(url: str) -> Optional[str]:
+    """Return 'youtube' or 'twitter' for a supported URL, None otherwise"""
     url = url.strip().lower()  # Strip whitespace and convert to lowercase
-    youtube_domains = ["youtube.com", "youtu.be"]
-    return any(domain in url for domain in youtube_domains)
+    if any(domain in url for domain in YOUTUBE_DOMAINS):
+        return "youtube"
+    if any(domain in url for domain in TWITTER_DOMAINS):
+        return "twitter"
+    return None
+
+def is_cancel_requested(download_id: str) -> bool:
+    """Check if a download has been marked for cancellation"""
+    with downloads_lock:
+        return download_id in cancel_downloads
 
 def sanitize_folder_name(name: str) -> str:
     """Sanitize folder name by removing invalid characters"""
@@ -298,12 +312,79 @@ def get_unique_folder_name(base_path: Path, folder_name: str) -> str:
             return new_name
         counter += 1
 
+def download_twitter_via_twitsave(download_id: str, url: str, output_path: Path, custom_name: Optional[str], download_video: bool) -> str:
+    """
+    Download an X/Twitter video through twitsave.com and return the saved title.
+
+    Used as a fallback when yt-dlp cannot reach the post. Audio-only requests are
+    converted to MP3 with ffmpeg afterwards.
+    """
+    import requests
+    import bs4
+    import subprocess
+
+    response = requests.get(f"https://twitsave.com/info?url={url}", timeout=30)
+    response.raise_for_status()
+    page = bs4.BeautifulSoup(response.text, "html.parser")
+
+    quality_menus = page.find_all("div", class_="origin-top-right")
+    quality_links = quality_menus[0].find_all("a") if quality_menus else []
+    if not quality_links:
+        raise Exception("No downloadable video found for this post")
+
+    video_url = quality_links[0].get("href")  # Highest quality video url
+
+    if custom_name:
+        base_name = sanitize_folder_name(custom_name)
+    else:
+        title_blocks = page.find_all("div", class_="leading-tight")
+        raw_title = title_blocks[0].find_all("p", class_="m-2")[0].text if title_blocks else ""
+        base_name = sanitize_folder_name(re.sub(r"[^a-zA-Z0-9]+", " ", raw_title).strip())
+
+    base_name = base_name or f"twitter_video_{download_id}"
+    video_file = output_path / f"{base_name}.mp4"
+
+    try:
+        with requests.get(video_url, stream=True, timeout=60) as stream:
+            stream.raise_for_status()
+            total_bytes = int(stream.headers.get("content-length", 0))
+            downloaded_bytes = 0
+
+            with open(video_file, "wb") as f:
+                for chunk in stream.iter_content(chunk_size=256 * 1024):
+                    if is_cancel_requested(download_id):
+                        raise Exception("Download cancelled by user")
+                    f.write(chunk)
+                    downloaded_bytes += len(chunk)
+                    if total_bytes > 0:
+                        with downloads_lock:
+                            downloads[download_id]["progress"] = int(downloaded_bytes / total_bytes * 100)
+
+        if not download_video:
+            audio_file = output_path / f"{base_name}.mp3"
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(video_file), "-vn", "-b:a", "192k", str(audio_file)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                audio_file.unlink(missing_ok=True)
+                raise Exception(f"MP3 conversion failed: {result.stderr[-300:]}")
+            video_file.unlink(missing_ok=True)
+
+    except Exception:
+        video_file.unlink(missing_ok=True)
+        raise
+
+    return base_name
+
 def perform_download(download_id: str, url: str, custom_name: Optional[str], download_list: bool = False, folder_name: Optional[str] = None, download_video: bool = False):
     """
     Perform the actual download in background
     """
     failed_videos = []
     successful_count = 0
+    platform = detect_platform(url)
 
     try:
         with downloads_lock:
@@ -365,6 +446,11 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
                 'progress_hooks': [lambda d: update_progress(download_id, d)],
             }
 
+        # A tweet's "title" is the whole post text, which easily blows past the
+        # 255 byte filename limit, so cap it and name the file by author
+        if platform == "twitter" and not custom_name:
+            ydl_opts['outtmpl'] = str(output_path / '%(uploader_id)s - %(title).80s.%(ext)s')
+
         # For playlists, continue on errors (skip unavailable videos)
         if download_list:
             ydl_opts['ignoreerrors'] = True
@@ -408,43 +494,63 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
             check_cancel(d) and (_ for _ in ()).throw(Exception("Download cancelled by user"))
         ))
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as ytdlp_error:
+            # X/Twitter regularly blocks yt-dlp's guest access. Fall back to the
+            # twitsave scraper (same approach as the standalone CLI downloader).
+            if platform != "twitter" or is_cancel_requested(download_id):
+                raise
 
-            if download_list:
-                # For playlists, count successful downloads
-                title = info.get('title', 'Playlist')
-                entries = info.get('entries', [])
-                total_videos = len([e for e in entries if e is not None])
-                successful_count = len([e for e in entries if e is not None and not e.get('_type') == 'url'])
-                failed_count = len(playlist_logger.failed) if hasattr(ydl_opts.get('logger'), 'failed') else 0
+            logger.warning(f"yt-dlp failed for {url}: {ytdlp_error}. Falling back to twitsave.")
+            title = download_twitter_via_twitsave(download_id, url, output_path, custom_name, download_video)
 
-                logger.info(f"Playlist download completed: {successful_count} successful, {failed_count} skipped")
+            with downloads_lock:
+                downloads[download_id].update({
+                    "status": "completed",
+                    "title": title,
+                    "progress": 100,
+                    "completed_at": datetime.now().timestamp()
+                })
 
-                status_msg = f"Downloaded {successful_count} videos"
-                if failed_count > 0:
-                    status_msg += f" ({failed_count} unavailable videos skipped)"
+            logger.info(f"Download completed via twitsave: {download_id} - {title}")
+            return
 
-                with downloads_lock:
-                    downloads[download_id].update({
-                        "status": "completed",
-                        "title": title,
-                        "progress": 100,
-                        "completed_at": datetime.now().timestamp(),
-                        "message": status_msg
-                    })
-            else:
-                # For single videos
-                title = info.get('title', 'Unknown')
-                with downloads_lock:
-                    downloads[download_id].update({
-                        "status": "completed",
-                        "title": title,
-                        "progress": 100,
-                        "completed_at": datetime.now().timestamp()
-                    })
+        if download_list:
+            # For playlists, count successful downloads
+            title = info.get('title', 'Playlist')
+            entries = info.get('entries', [])
+            total_videos = len([e for e in entries if e is not None])
+            successful_count = len([e for e in entries if e is not None and not e.get('_type') == 'url'])
+            failed_count = len(playlist_logger.failed) if hasattr(ydl_opts.get('logger'), 'failed') else 0
 
-            logger.info(f"Download completed: {download_id} - {title}")
+            logger.info(f"Playlist download completed: {successful_count} successful, {failed_count} skipped")
+
+            status_msg = f"Downloaded {successful_count} videos"
+            if failed_count > 0:
+                status_msg += f" ({failed_count} unavailable videos skipped)"
+
+            with downloads_lock:
+                downloads[download_id].update({
+                    "status": "completed",
+                    "title": title,
+                    "progress": 100,
+                    "completed_at": datetime.now().timestamp(),
+                    "message": status_msg
+                })
+        else:
+            # For single videos
+            title = info.get('title', 'Unknown')
+            with downloads_lock:
+                downloads[download_id].update({
+                    "status": "completed",
+                    "title": title,
+                    "progress": 100,
+                    "completed_at": datetime.now().timestamp()
+                })
+
+        logger.info(f"Download completed: {download_id} - {title}")
 
     except Exception as e:
         error_msg = str(e)
@@ -468,9 +574,11 @@ def perform_download(download_id: str, url: str, custom_name: Optional[str], dow
 def update_progress(download_id: str, d):
     """Update progress for a download"""
     if d['status'] == 'downloading':
-        if d['total_bytes'] > 0:
-            progress = int(d['downloaded_bytes'] / d['total_bytes'] * 100)
-            downloads[download_id]["progress"] = progress
+        # Fragmented (HLS) downloads, e.g. X/Twitter, only report an estimate
+        total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+        if total_bytes > 0:
+            progress = int(d.get('downloaded_bytes', 0) / total_bytes * 100)
+            downloads[download_id]["progress"] = min(progress, 100)
     elif d['status'] == 'finished':
         downloads[download_id]["progress"] = 100
 
