@@ -1,7 +1,9 @@
-fastapi==0.104.1
-uvicorn==0.24.0
+# fastapi/starlette >= 0.141 is required: older FileResponse ignores Range
+# requests, which iOS Safari/Brave need to download or stream media
+fastapi==0.141.1
+uvicorn==0.52.1
 yt-dlp
-pydantic==2.5.0
+pydantic==2.13.4
 python-multipart==0.0.6
 requests==2.31.0
 beautifulsoup4==4.12.3

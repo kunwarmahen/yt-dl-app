@@ -530,6 +530,11 @@ main {
   border-radius: 4px;
   transition: all 0.2s ease;
   color: var(--text);
+  /* the download action is an <a>, keep it looking like its sibling buttons */
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  text-decoration: none;
 }
 
 .btn-play {

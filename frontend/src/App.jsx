@@ -209,16 +209,8 @@ function App() {
     window.open(fileUrl, "_blank");
   };
 
-  const handleDownloadFile = (filename) => {
-    const fileUrl = `${API_BASE}/download-file/${encodeURIComponent(filename)}`;
-    // Trigger download
-    const link = document.createElement("a");
-    link.href = fileUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  const buildDownloadUrl = (filename) =>
+    `${API_BASE}/download-file/${encodeURIComponent(filename)}`;
 
   const handleDeleteFile = async (filePath) => {
     try {
@@ -678,13 +670,16 @@ function App() {
                             >
                               ▶️
                             </button>
-                            <button
+                            {/* A real anchor, not a synthetic click: iOS
+                                Safari/Brave ignore programmatic downloads */}
+                            <a
                               className="btn-action btn-download"
-                              onClick={() => handleDownloadFile(item.path)}
+                              href={buildDownloadUrl(item.path)}
+                              download={item.name}
                               title="Download"
                             >
                               ⬇️
-                            </button>
+                            </a>
                             <button
                               className="btn-action btn-delete"
                               onClick={() => handleDeleteFile(item.path)}
