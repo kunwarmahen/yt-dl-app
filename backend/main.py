@@ -206,6 +206,24 @@ async def list_downloads():
     )
     return {item[0]: item[1] for item in sorted_downloads}
 
+def is_safe_relative_path(path: str) -> bool:
+    """
+    Check that a user-supplied path stays inside download_path.
+
+    Checks whole path components rather than the ".." substring, so legitimate
+    names containing an ellipsis (e.g. truncated video titles) are not rejected.
+    """
+    if path.startswith("/") or path.startswith("\\"):
+        return False
+    if ".." in Path(path).parts:
+        return False
+    try:
+        resolved = (download_path / path).resolve()
+        root = download_path.resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
 @app.get("/files")
 async def list_downloaded_files(path: str = ""):
     """
@@ -213,7 +231,7 @@ async def list_downloaded_files(path: str = ""):
     Returns items list and metadata (total_files count for root path)
     """
     # Sanitize path to prevent directory traversal
-    if ".." in path or path.startswith("/"):
+    if not is_safe_relative_path(path):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     # Build current directory path
@@ -617,7 +635,7 @@ async def delete_file(file_path: str):
 
         # Sanitize path to prevent directory traversal
         file_path = file_path.strip()
-        if ".." in file_path or file_path.startswith("/"):
+        if not is_safe_relative_path(file_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         full_path = download_path / file_path
@@ -656,7 +674,7 @@ async def play_file(file_path: str):
 
         # Sanitize path to prevent directory traversal
         file_path = file_path.strip()
-        if ".." in file_path or file_path.startswith("/"):
+        if not is_safe_relative_path(file_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         full_path = download_path / file_path
@@ -703,7 +721,7 @@ async def download_file(file_path: str):
 
         # Sanitize path to prevent directory traversal
         file_path = file_path.strip()
-        if ".." in file_path or file_path.startswith("/"):
+        if not is_safe_relative_path(file_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         full_path = download_path / file_path
@@ -749,7 +767,7 @@ async def rename_folder(request: RenameRequest):
     """Rename a folder"""
     try:
         # Sanitize paths
-        if ".." in request.old_name or ".." in request.new_name:
+        if not is_safe_relative_path(request.old_name) or ".." in Path(request.new_name).parts:
             raise HTTPException(status_code=400, detail="Invalid folder name")
         if "/" in request.old_name or "\\" in request.old_name:
             raise HTTPException(status_code=400, detail="Invalid old folder name")
@@ -791,7 +809,7 @@ async def delete_folder(folder_path: str):
 
         # Sanitize path to prevent directory traversal
         folder_path = folder_path.strip()
-        if ".." in folder_path or folder_path.startswith("/"):
+        if not is_safe_relative_path(folder_path):
             raise HTTPException(status_code=400, detail="Invalid folder path")
 
         full_path = download_path / folder_path
